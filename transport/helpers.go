@@ -3,9 +3,11 @@ package transport
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"strings"
 
+	"github.com/addpur/go-polykit"
 	"github.com/gofiber/fiber/v2"
 	"google.golang.org/grpc/metadata"
 )
@@ -114,3 +116,37 @@ func GRPCToContext() GRPCRequestFunc {
 		return ctx
 	}
 }
+
+// EncodeJSONResponse encodes response to JSON and sets the HTTP status code
+// appropriately if response is a polykit.StandardResponse.
+func EncodeJSONResponse(ctx context.Context, w http.ResponseWriter, response interface{}) error {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if resp, ok := response.(polykit.StandardResponse); ok {
+		switch resp.ResponseCode {
+		case "00":
+			w.WriteHeader(http.StatusOK)
+		case "01", "401":
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}
+	return json.NewEncoder(w).Encode(response)
+}
+
+// EncodeFiberJSONResponse encodes response to JSON using GoFiber Context
+// and sets the HTTP status code appropriately if response is a polykit.StandardResponse.
+func EncodeFiberJSONResponse(ctx context.Context, c *fiber.Ctx, response interface{}) error {
+	if resp, ok := response.(polykit.StandardResponse); ok {
+		switch resp.ResponseCode {
+		case "00":
+			c.Status(fiber.StatusOK)
+		case "01", "401":
+			c.Status(fiber.StatusUnauthorized)
+		default:
+			c.Status(fiber.StatusBadRequest)
+		}
+	}
+	return c.JSON(response)
+}
+

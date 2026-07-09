@@ -53,10 +53,6 @@ func fiberDecodeQuery(ctx context.Context, c *fiber.Ctx) (interface{}, error) {
 	return req, nil
 }
 
-func fiberEncodeJSON(ctx context.Context, c *fiber.Ctx, response interface{}) error {
-	return c.JSON(response)
-}
-
 func fiberErrorEncoder(ctx context.Context, err error, c *fiber.Ctx) {
 	c.Status(fiber.StatusInternalServerError).JSON(polykit.StandardResponse{
 		ResponseCode: "99",
@@ -68,13 +64,6 @@ func muxDecodeQuery(ctx context.Context, r *http.Request) (interface{}, error) {
 	return SecretRequest{Query: r.URL.Query().Get("query")}, nil
 }
 
-func muxEncodeJSON(ctx context.Context, w http.ResponseWriter, response interface{}) error {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if resp, ok := response.(polykit.StandardResponse); ok && resp.ResponseCode != "00" {
-		w.WriteHeader(http.StatusUnauthorized)
-	}
-	return json.NewEncoder(w).Encode(response)
-}
 
 func muxErrorEncoder(ctx context.Context, err error, w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -125,11 +114,11 @@ func main() {
 	app := fiber.New()
 
 	app.Get("/fiber/jwt-secret", transport.NewFiberServer(
-		jwtEndpoint, fiberDecodeQuery, fiberEncodeJSON, fiberOpt...,
+		jwtEndpoint, fiberDecodeQuery, transport.EncodeFiberJSONResponse, fiberOpt...,
 	).Handler())
 
 	app.Get("/fiber/basic-secret", transport.NewFiberServer(
-		basicEndpoint, fiberDecodeQuery, fiberEncodeJSON, fiberOpt...,
+		basicEndpoint, fiberDecodeQuery, transport.EncodeFiberJSONResponse, fiberOpt...,
 	).Handler())
 
 	app.Use("/ws", func(c *fiber.Ctx) error {
@@ -173,11 +162,11 @@ func main() {
 	r := mux.NewRouter()
 
 	r.Methods(http.MethodGet).Path("/mux/jwt-secret").Handler(
-		transport.NewHTTPServer(jwtEndpoint, muxDecodeQuery, muxEncodeJSON, muxOpt...),
+		transport.NewHTTPServer(jwtEndpoint, muxDecodeQuery, transport.EncodeJSONResponse, muxOpt...),
 	)
 
 	r.Methods(http.MethodGet).Path("/mux/basic-secret").Handler(
-		transport.NewHTTPServer(basicEndpoint, muxDecodeQuery, muxEncodeJSON, muxOpt...),
+		transport.NewHTTPServer(basicEndpoint, muxDecodeQuery, transport.EncodeJSONResponse, muxOpt...),
 	)
 
 	go func() {

@@ -2,76 +2,102 @@ package transport
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
-	"strings"
 
 	"github.com/addpur/go-polykit"
 )
 
-// HTTPDecodeRequestFunc extracts a user-domain request object from an HTTP request.
-type HTTPDecodeRequestFunc func(*http.Request) (interface{}, error)
+type HTTPDecodeRequestFunc func(context.Context, *http.Request) (interface{}, error)
 
-// HTTPEncodeResponseFunc encodes a user-domain response object into an HTTP response.
-type HTTPEncodeResponseFunc func(http.ResponseWriter, *http.Request, interface{}) error
+type HTTPEncodeResponseFunc func(context.Context, http.ResponseWriter, interface{}) error
 
-// HTTPEncodeErrorFunc encodes a user-domain error into an HTTP response.
-type HTTPEncodeErrorFunc func(http.ResponseWriter, error)
+type HTTPEncodeErrorFunc func(context.Context, error, http.ResponseWriter)
 
-// NewHTTPServer constructs a new http.Handler for the given endpoint.
-// It is fully compatible with Gorilla Mux or standard net/http mux.
+type HTTPRequestFunc func(ctx context.Context, r *http.Request) context.Context
+
+type HTTPResponseFunc func(ctx context.Context, w http.ResponseWriter) context.Context
+
+type HTTPServerOption func(*HTTPServer)
+
+type HTTPServer struct {
+	e      polykit.Endpoint
+	dec    HTTPDecodeRequestFunc
+	enc    HTTPEncodeResponseFunc
+	errEnc HTTPEncodeErrorFunc
+	before []HTTPRequestFunc
+	after  []HTTPResponseFunc
+}
+
 func NewHTTPServer(
 	e polykit.Endpoint,
 	dec HTTPDecodeRequestFunc,
 	enc HTTPEncodeResponseFunc,
-	errEnc HTTPEncodeErrorFunc,
-) http.HandlerFunc {
-	if errEnc == nil {
-		errEnc = DefaultHTTPErrorEncoder
+	options ...HTTPServerOption,
+) *HTTPServer {
+	s := &HTTPServer{
+		e:      e,
+		dec:    dec,
+		enc:    enc,
+		errEnc: DefaultHTTPErrorEncoder,
 	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		req, err := dec(r)
-		if err != nil {
-			errEnc(w, err)
-			return
-		}
+	for _, o := range options {
+		o(s)
+	}
+	return s
+}
 
-		ctx := r.Context()
-		if ctx == nil {
-			ctx = context.Background()
-		}
+func (s *HTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
-		authHeader := r.Header.Get("Authorization")
-		if authHeader != "" {
-			parts := strings.SplitN(authHeader, " ", 2)
-			if len(parts) == 2 {
-				switch strings.ToLower(parts[0]) {
-				case "bearer":
-					ctx = context.WithValue(ctx, "auth_token", parts[1])
-				case "basic":
-					decoded, err := base64.StdEncoding.DecodeString(parts[1])
-					if err == nil {
-						ctx = context.WithValue(ctx, "auth_basic", string(decoded))
-					}
-				}
-			}
-		}
+	for _, f := range s.before {
+		ctx = f(ctx, r)
+	}
 
-		res, err := e(ctx, req)
-		if err != nil {
-			errEnc(w, err)
-			return
-		}
+	request, err := s.dec(ctx, r)
+	if err != nil {
+		s.errEnc(ctx, err, w)
+		return
+	}
 
-		if err := enc(w, r, res); err != nil {
-			errEnc(w, err)
-			return
-		}
+	response, err := s.e(ctx, request)
+	if err != nil {
+		s.errEnc(ctx, err, w)
+		return
+	}
+
+	for _, f := range s.after {
+		ctx = f(ctx, w)
+	}
+
+	if err := s.enc(ctx, w, response); err != nil {
+		s.errEnc(ctx, err, w)
+		return
 	}
 }
 
-func DefaultHTTPErrorEncoder(w http.ResponseWriter, err error) {
+func HTTPServerBefore(before ...HTTPRequestFunc) HTTPServerOption {
+	return func(s *HTTPServer) {
+		s.before = append(s.before, before...)
+	}
+}
+
+func HTTPServerAfter(after ...HTTPResponseFunc) HTTPServerOption {
+	return func(s *HTTPServer) {
+		s.after = append(s.after, after...)
+	}
+}
+
+func HTTPServerErrorEncoder(errEnc HTTPEncodeErrorFunc) HTTPServerOption {
+	return func(s *HTTPServer) {
+		s.errEnc = errEnc
+	}
+}
+
+func DefaultHTTPErrorEncoder(ctx context.Context, err error, w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusInternalServerError)
 	json.NewEncoder(w).Encode(polykit.StandardResponse{

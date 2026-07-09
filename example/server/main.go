@@ -45,7 +45,7 @@ func makeBasicAuthEndpoint() polykit.Endpoint {
 	}
 }
 
-func fiberDecodeQuery(c *fiber.Ctx) (interface{}, error) {
+func fiberDecodeQuery(ctx context.Context, c *fiber.Ctx) (interface{}, error) {
 	var req SecretRequest
 	if err := c.QueryParser(&req); err != nil {
 		return nil, err
@@ -53,20 +53,36 @@ func fiberDecodeQuery(c *fiber.Ctx) (interface{}, error) {
 	return req, nil
 }
 
-func fiberEncodeJSON(c *fiber.Ctx, response interface{}) error {
+func fiberEncodeJSON(ctx context.Context, c *fiber.Ctx, response interface{}) error {
 	return c.JSON(response)
 }
 
-func muxDecodeQuery(r *http.Request) (interface{}, error) {
+func fiberErrorEncoder(ctx context.Context, err error, c *fiber.Ctx) {
+	c.Status(fiber.StatusInternalServerError).JSON(polykit.StandardResponse{
+		ResponseCode: "99",
+		Message:      err.Error(),
+	})
+}
+
+func muxDecodeQuery(ctx context.Context, r *http.Request) (interface{}, error) {
 	return SecretRequest{Query: r.URL.Query().Get("query")}, nil
 }
 
-func muxEncodeJSON(w http.ResponseWriter, r *http.Request, response interface{}) error {
+func muxEncodeJSON(ctx context.Context, w http.ResponseWriter, response interface{}) error {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if resp, ok := response.(polykit.StandardResponse); ok && resp.ResponseCode != "00" {
 		w.WriteHeader(http.StatusUnauthorized)
 	}
 	return json.NewEncoder(w).Encode(response)
+}
+
+func muxErrorEncoder(ctx context.Context, err error, w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusInternalServerError)
+	json.NewEncoder(w).Encode(polykit.StandardResponse{
+		ResponseCode: "99",
+		Message:      err.Error(),
+	})
 }
 
 func main() {
@@ -94,10 +110,27 @@ func main() {
 		polykit.BasicAuthMiddleware(basicUser, basicPass),
 	)(makeBasicAuthEndpoint())
 
+	// Fiber ServerOption — mirip go-kit kithttp.ServerOption
+	fiberOpt := []transport.FiberServerOption{
+		transport.FiberServerErrorEncoder(fiberErrorEncoder),
+		transport.FiberServerBefore(
+			transport.FiberToContext(),
+		),
+		transport.FiberServerAfter(
+			transport.SetFiberResponseHeader("X-Frame-Options", "DENY"),
+			transport.SetFiberResponseHeader("X-Content-Type-Options", "nosniff"),
+		),
+	}
+
 	app := fiber.New()
 
-	app.Get("/fiber/jwt-secret", transport.NewFiberServer(jwtEndpoint, fiberDecodeQuery, fiberEncodeJSON, nil))
-	app.Get("/fiber/basic-secret", transport.NewFiberServer(basicEndpoint, fiberDecodeQuery, fiberEncodeJSON, nil))
+	app.Get("/fiber/jwt-secret", transport.NewFiberServer(
+		jwtEndpoint, fiberDecodeQuery, fiberEncodeJSON, fiberOpt...,
+	).Handler())
+
+	app.Get("/fiber/basic-secret", transport.NewFiberServer(
+		basicEndpoint, fiberDecodeQuery, fiberEncodeJSON, fiberOpt...,
+	).Handler())
 
 	app.Use("/ws", func(c *fiber.Ctx) error {
 		if websocket.IsWebSocketUpgrade(c) {
@@ -114,7 +147,7 @@ func main() {
 		func(res interface{}) (int, []byte, error) {
 			return websocket.TextMessage, []byte(fmt.Sprintf("%v", res)), nil
 		},
-	)))
+	).Handler()))
 
 	go func() {
 		sugar.Info("Starting Fiber server on :3000")
@@ -123,9 +156,29 @@ func main() {
 		}
 	}()
 
+	// Mux ServerOption — mirip go-kit kithttp.ServerOption
+	muxOpt := []transport.HTTPServerOption{
+		transport.HTTPServerErrorEncoder(muxErrorEncoder),
+		transport.HTTPServerBefore(
+			transport.HTTPToContext(),
+			transport.PopulateRequestID(),
+		),
+		transport.HTTPServerAfter(
+			transport.SetResponseHeader("X-Frame-Options", "DENY"),
+			transport.SetResponseHeader("X-Content-Type-Options", "nosniff"),
+			transport.SetResponseHeader("X-XSS-Protection", "1; mode=block"),
+		),
+	}
+
 	r := mux.NewRouter()
-	r.Handle("/mux/jwt-secret", transport.NewHTTPServer(jwtEndpoint, muxDecodeQuery, muxEncodeJSON, nil)).Methods(http.MethodGet)
-	r.Handle("/mux/basic-secret", transport.NewHTTPServer(basicEndpoint, muxDecodeQuery, muxEncodeJSON, nil)).Methods(http.MethodGet)
+
+	r.Methods(http.MethodGet).Path("/mux/jwt-secret").Handler(
+		transport.NewHTTPServer(jwtEndpoint, muxDecodeQuery, muxEncodeJSON, muxOpt...),
+	)
+
+	r.Methods(http.MethodGet).Path("/mux/basic-secret").Handler(
+		transport.NewHTTPServer(basicEndpoint, muxDecodeQuery, muxEncodeJSON, muxOpt...),
+	)
 
 	go func() {
 		sugar.Info("Starting Gorilla Mux server on :8080")

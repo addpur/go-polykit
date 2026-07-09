@@ -7,51 +7,76 @@ import (
 	"github.com/gofiber/websocket/v2"
 )
 
-// WSDecodeRequestFunc extracts a request from a websocket message.
 type WSDecodeRequestFunc func(messageType int, msg []byte) (interface{}, error)
 
-// WSEncodeResponseFunc encodes a response into a websocket message.
 type WSEncodeResponseFunc func(res interface{}) (messageType int, msg []byte, err error)
 
-// NewFiberWSServer creates a WebSocket handler that wraps a polykit.Endpoint.
+type WSRequestFunc func(ctx context.Context, conn *websocket.Conn) context.Context
+
+type WSServerOption func(*FiberWSServer)
+
+type FiberWSServer struct {
+	e      polykit.Endpoint
+	dec    WSDecodeRequestFunc
+	enc    WSEncodeResponseFunc
+	before []WSRequestFunc
+}
+
 func NewFiberWSServer(
 	e polykit.Endpoint,
 	dec WSDecodeRequestFunc,
 	enc WSEncodeResponseFunc,
-) func(*websocket.Conn) {
+	options ...WSServerOption,
+) *FiberWSServer {
+	s := &FiberWSServer{
+		e:   e,
+		dec: dec,
+		enc: enc,
+	}
+	for _, o := range options {
+		o(s)
+	}
+	return s
+}
+
+func (s *FiberWSServer) Handler() func(*websocket.Conn) {
 	return func(c *websocket.Conn) {
 		ctx := context.Background()
 
-		// Get token from URL query string
-		token := c.Query("token")
-		if token != "" {
-			ctx = context.WithValue(ctx, "auth_token", token)
+		for _, f := range s.before {
+			ctx = f(ctx, c)
 		}
 
 		for {
 			mt, msg, err := c.ReadMessage()
 			if err != nil {
-				break // Client disconnected or error
+				break
 			}
 
-			req, err := dec(mt, msg)
-			if err != nil {
-				continue // Skip invalid messages or handle error
-			}
-
-			res, err := e(ctx, req)
+			req, err := s.dec(mt, msg)
 			if err != nil {
 				continue
 			}
 
-			outMt, outMsg, err := enc(res)
+			res, err := s.e(ctx, req)
+			if err != nil {
+				continue
+			}
+
+			outMt, outMsg, err := s.enc(res)
 			if err != nil {
 				continue
 			}
 
 			if err := c.WriteMessage(outMt, outMsg); err != nil {
-				break // Write failed, close connection
+				break
 			}
 		}
+	}
+}
+
+func WSServerBefore(before ...WSRequestFunc) WSServerOption {
+	return func(s *FiberWSServer) {
+		s.before = append(s.before, before...)
 	}
 }

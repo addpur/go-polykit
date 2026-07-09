@@ -2,54 +2,70 @@ package transport
 
 import (
 	"context"
-	"net/http"
-	"strings"
 
 	"github.com/addpur/go-polykit"
 	"github.com/graphql-go/graphql"
 )
 
-// GQLDecodeRequestFunc extracts a user-domain request from GraphQL ResolveParams.
-type GQLDecodeRequestFunc func(graphql.ResolveParams) (interface{}, error)
+type GQLDecodeRequestFunc func(context.Context, graphql.ResolveParams) (interface{}, error)
 
-// GQLEncodeResponseFunc encodes a user-domain response into a format suitable for GraphQL.
-type GQLEncodeResponseFunc func(interface{}) (interface{}, error)
+type GQLEncodeResponseFunc func(context.Context, interface{}) (interface{}, error)
 
-// NewGQLResolver creates a graphql-go resolver function that wraps a polykit.Endpoint.
+type GQLRequestFunc func(ctx context.Context, p graphql.ResolveParams) context.Context
+
+type GQLServerOption func(*GQLServer)
+
+type GQLServer struct {
+	e      polykit.Endpoint
+	dec    GQLDecodeRequestFunc
+	enc    GQLEncodeResponseFunc
+	before []GQLRequestFunc
+}
+
 func NewGQLResolver(
 	e polykit.Endpoint,
 	dec GQLDecodeRequestFunc,
 	enc GQLEncodeResponseFunc,
-) graphql.FieldResolveFn {
-	return func(p graphql.ResolveParams) (interface{}, error) {
-		req, err := dec(p)
-		if err != nil {
-			return nil, err
-		}
+	options ...GQLServerOption,
+) *GQLServer {
+	s := &GQLServer{
+		e:   e,
+		dec: dec,
+		enc: enc,
+	}
+	for _, o := range options {
+		o(s)
+	}
+	return s
+}
 
+func (s *GQLServer) Resolve() graphql.FieldResolveFn {
+	return func(p graphql.ResolveParams) (interface{}, error) {
 		ctx := p.Context
 		if ctx == nil {
 			ctx = context.Background()
 		}
 
-		// Try to extract from standard HTTP request if present in context (graphql-go/handler injects this)
-		if reqObj, ok := ctx.Value("request").(*http.Request); ok && reqObj != nil {
-			authHeader := reqObj.Header.Get("Authorization")
-			if authHeader != "" {
-				parts := strings.SplitN(authHeader, " ", 2)
-				if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
-					ctx = context.WithValue(ctx, "auth_token", parts[1])
-				} else {
-					ctx = context.WithValue(ctx, "auth_token", authHeader)
-				}
-			}
+		for _, f := range s.before {
+			ctx = f(ctx, p)
 		}
 
-		res, err := e(ctx, req)
+		request, err := s.dec(ctx, p)
 		if err != nil {
 			return nil, err
 		}
 
-		return enc(res)
+		response, err := s.e(ctx, request)
+		if err != nil {
+			return nil, err
+		}
+
+		return s.enc(ctx, response)
+	}
+}
+
+func GQLServerBefore(before ...GQLRequestFunc) GQLServerOption {
+	return func(s *GQLServer) {
+		s.before = append(s.before, before...)
 	}
 }

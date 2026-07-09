@@ -2,68 +2,79 @@ package transport
 
 import (
 	"context"
-	"encoding/base64"
-	"strings"
 
 	"github.com/addpur/go-polykit"
 	"github.com/gofiber/fiber/v2"
 )
 
-// FiberDecodeRequestFunc extracts a user-domain request object from an HTTP request.
-type FiberDecodeRequestFunc func(*fiber.Ctx) (interface{}, error)
+type FiberDecodeRequestFunc func(context.Context, *fiber.Ctx) (interface{}, error)
 
-// FiberEncodeResponseFunc encodes a user-domain response object into an HTTP response.
-type FiberEncodeResponseFunc func(*fiber.Ctx, interface{}) error
+type FiberEncodeResponseFunc func(context.Context, *fiber.Ctx, interface{}) error
 
-// FiberEncodeErrorFunc encodes a user-domain error into an HTTP response.
-type FiberEncodeErrorFunc func(*fiber.Ctx, error)
+type FiberEncodeErrorFunc func(context.Context, error, *fiber.Ctx)
 
-// NewFiberServer constructs a new fiber handler for the given endpoint.
+type FiberRequestFunc func(ctx context.Context, c *fiber.Ctx) context.Context
+
+type FiberResponseFunc func(ctx context.Context, c *fiber.Ctx) context.Context
+
+type FiberServerOption func(*FiberServer)
+
+type FiberServer struct {
+	e      polykit.Endpoint
+	dec    FiberDecodeRequestFunc
+	enc    FiberEncodeResponseFunc
+	errEnc FiberEncodeErrorFunc
+	before []FiberRequestFunc
+	after  []FiberResponseFunc
+}
+
 func NewFiberServer(
 	e polykit.Endpoint,
 	dec FiberDecodeRequestFunc,
 	enc FiberEncodeResponseFunc,
-	errEnc FiberEncodeErrorFunc,
-) fiber.Handler {
-	if errEnc == nil {
-		errEnc = DefaultFiberErrorEncoder
+	options ...FiberServerOption,
+) *FiberServer {
+	s := &FiberServer{
+		e:      e,
+		dec:    dec,
+		enc:    enc,
+		errEnc: DefaultFiberErrorEncoder,
 	}
-	return func(c *fiber.Ctx) error {
-		req, err := dec(c)
-		if err != nil {
-			errEnc(c, err)
-			return nil
-		}
+	for _, o := range options {
+		o(s)
+	}
+	return s
+}
 
+func (s *FiberServer) Handler() fiber.Handler {
+	return func(c *fiber.Ctx) error {
 		ctx := c.UserContext()
 		if ctx == nil {
 			ctx = context.Background()
 		}
 
-		authHeader := c.Get("Authorization")
-		if authHeader != "" {
-			parts := strings.SplitN(authHeader, " ", 2)
-			if len(parts) == 2 {
-				switch strings.ToLower(parts[0]) {
-				case "bearer":
-					ctx = context.WithValue(ctx, "auth_token", parts[1])
-				case "basic":
-					decoded, err := base64.StdEncoding.DecodeString(parts[1])
-					if err == nil {
-						ctx = context.WithValue(ctx, "auth_basic", string(decoded))
-					}
-				}
-			}
+		for _, f := range s.before {
+			ctx = f(ctx, c)
 		}
 
-		res, err := e(ctx, req)
+		request, err := s.dec(ctx, c)
 		if err != nil {
-			errEnc(c, err)
+			s.errEnc(ctx, err, c)
 			return nil
 		}
 
-		if err := enc(c, res); err != nil {
-			errEnc(c, err)
+		response, err := s.e(ctx, request)
+		if err != nil {
+			s.errEnc(ctx, err, c)
+			return nil
+		}
+
+		for _, f := range s.after {
+			ctx = f(ctx, c)
+		}
+
+		if err := s.enc(ctx, c, response); err != nil {
+			s.errEnc(ctx, err, c)
 			return nil
 		}
 
@@ -71,7 +82,25 @@ func NewFiberServer(
 	}
 }
 
-func DefaultFiberErrorEncoder(c *fiber.Ctx, err error) {
+func FiberServerBefore(before ...FiberRequestFunc) FiberServerOption {
+	return func(s *FiberServer) {
+		s.before = append(s.before, before...)
+	}
+}
+
+func FiberServerAfter(after ...FiberResponseFunc) FiberServerOption {
+	return func(s *FiberServer) {
+		s.after = append(s.after, after...)
+	}
+}
+
+func FiberServerErrorEncoder(errEnc FiberEncodeErrorFunc) FiberServerOption {
+	return func(s *FiberServer) {
+		s.errEnc = errEnc
+	}
+}
+
+func DefaultFiberErrorEncoder(ctx context.Context, err error, c *fiber.Ctx) {
 	c.Status(fiber.StatusInternalServerError).JSON(polykit.StandardResponse{
 		ResponseCode: "500",
 		Message:      err.Error(),

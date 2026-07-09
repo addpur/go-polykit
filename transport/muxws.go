@@ -4,8 +4,8 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/gorilla/websocket"
 	"github.com/addpur/go-polykit"
+	"github.com/gorilla/websocket"
 )
 
 var upgrader = websocket.Upgrader{

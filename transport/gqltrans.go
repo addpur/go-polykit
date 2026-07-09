@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/graphql-go/graphql"
 	"github.com/addpur/go-polykit"
+	"github.com/graphql-go/graphql"
 )
 
 // GQLDecodeRequestFunc extracts a user-domain request from GraphQL ResolveParams.

@@ -4,8 +4,8 @@ import (
 	"context"
 	"strings"
 
-	"github.com/gofiber/fiber/v2"
 	"github.com/addpur/go-polykit"
+	"github.com/gofiber/fiber/v2"
 )
 
 // FiberDecodeRequestFunc extracts a user-domain request object from an HTTP request.

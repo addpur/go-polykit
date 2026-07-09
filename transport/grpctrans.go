@@ -4,8 +4,8 @@ import (
 	"context"
 	"strings"
 
-	"google.golang.org/grpc/metadata"
 	"github.com/addpur/go-polykit"
+	"google.golang.org/grpc/metadata"
 )
 
 // GRPCDecodeRequestFunc extracts a user-domain request object from a gRPC request.

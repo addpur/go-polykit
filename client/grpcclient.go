@@ -3,8 +3,8 @@ package client
 import (
 	"context"
 
-	"google.golang.org/grpc"
 	"github.com/addpur/go-polykit"
+	"google.golang.org/grpc"
 )
 
 // GRPCEncodeRequestFunc encodes a user-domain request into a gRPC request.
@@ -34,7 +34,7 @@ func NewGRPCClient(
 		// in real-world you would probably use reflection to create a new instance,
 		// or rely on the decode func to handle the raw message if using a more dynamic approach.
 		// For simplicity without reflection, we expect reply to be provided properly or handled by caller.
-		
+
 		err = conn.Invoke(ctx, fullMethod, req, replyType)
 		if err != nil {
 			return nil, err

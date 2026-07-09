@@ -21,14 +21,14 @@ type SecretRequest struct {
 func makeSecretEndpoint() polykit.Endpoint {
 	return func(ctx context.Context, request interface{}) (interface{}, error) {
 		req := request.(SecretRequest)
-		
+
 		// Extract user_id injected by JWTAuthMiddleware
 		userID := ctx.Value("user_id")
-		
+
 		return polykit.StandardResponse{
 			ResponseCode: "00",
 			Message:      "Success",
-			Data: fmt.Sprintf("Hello User %v, your secret query '%s' has been processed.", userID, req.Query),
+			Data:         fmt.Sprintf("Hello User %v, your secret query '%s' has been processed.", userID, req.Query),
 		}, nil
 	}
 }
@@ -105,7 +105,7 @@ func main() {
 		},
 		func(ctx context.Context, res interface{}) (interface{}, error) {
 			// Cast from domain response to proto response
-			return res, nil 
+			return res, nil
 		},
 	)
 	log.Printf("gRPC handler initialized (requires grpc.Server and proto registration to actually run): %v", grpcHandler != nil)

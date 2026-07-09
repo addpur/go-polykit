@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/gofiber/fiber/v2"
 	"github.com/addpur/go-polykit"
+	"github.com/gofiber/fiber/v2"
 )
 
 // FiberEncodeRequestFunc encodes a user-domain request into a Fiber Agent request.

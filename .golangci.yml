@@ -1,0 +1,19 @@
+linters-settings:
+  govet:
+    enable-all: true
+  gofmt:
+    simplify: true
+
+linters:
+  disable-all: true
+  enable:
+    - gofmt
+    - govet
+    - errcheck
+    - staticcheck
+    - ineffassign
+    - gosimple
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

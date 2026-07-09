@@ -3,8 +3,8 @@ package transport
 import (
 	"context"
 
-	"github.com/gofiber/websocket/v2"
 	"github.com/addpur/go-polykit"
+	"github.com/gofiber/websocket/v2"
 )
 
 // WSDecodeRequestFunc extracts a request from a websocket message.

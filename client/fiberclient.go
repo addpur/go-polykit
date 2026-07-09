@@ -11,8 +11,9 @@ import (
 // FiberEncodeRequestFunc encodes a user-domain request into a Fiber Agent request.
 type FiberEncodeRequestFunc func(context.Context, *fiber.Agent, interface{}) error
 
-// FiberDecodeResponseFunc extracts a user-domain response from a Fiber Agent response.
-type FiberDecodeResponseFunc func(context.Context, *fiber.Agent, interface{}) (interface{}, error)
+// FiberDecodeResponseFunc extracts a user-domain response from the raw HTTP response.
+// It receives the HTTP status code and the response body bytes.
+type FiberDecodeResponseFunc func(ctx context.Context, statusCode int, body []byte) (interface{}, error)
 
 // NewFiberClient creates a polykit.Endpoint that makes HTTP requests using Fiber's Agent (FastHTTP).
 func NewFiberClient(
@@ -36,9 +37,8 @@ func NewFiberClient(
 			return nil, fmt.Errorf("parse error: %w", err)
 		}
 
-		statusCode, _, errs := agent.Bytes()
+		statusCode, body, errs := agent.Bytes()
 		if len(errs) > 0 {
-			// Catch network errors, timeouts, etc.
 			return polykit.StandardResponse{
 				ResponseCode: "99",
 				Message:      "Connection Timeout/Refused",
@@ -53,7 +53,6 @@ func NewFiberClient(
 			}, nil
 		}
 
-		// Agent retains the response body and properties, we pass it to decode
-		return dec(ctx, agent, request)
+		return dec(ctx, statusCode, body)
 	}
 }

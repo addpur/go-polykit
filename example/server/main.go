@@ -2,68 +2,103 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
+	"github.com/gorilla/mux"
+	"go.uber.org/zap"
 
 	"github.com/addpur/go-polykit"
+	"github.com/addpur/go-polykit/pkg/polykit/logger"
+	"github.com/addpur/go-polykit/pkg/polykit/telemetry"
 	"github.com/addpur/go-polykit/transport"
 )
 
-// 1. Define your domain request and response
 type SecretRequest struct {
 	Query string `json:"query"`
 }
 
-// 2. Write your core business logic as an Endpoint
-func makeSecretEndpoint() polykit.Endpoint {
+func makeJWTEndpoint() polykit.Endpoint {
 	return func(ctx context.Context, request interface{}) (interface{}, error) {
 		req := request.(SecretRequest)
-
-		// Extract user_id injected by JWTAuthMiddleware
 		userID := ctx.Value("user_id")
-
 		return polykit.StandardResponse{
 			ResponseCode: "00",
 			Message:      "Success",
-			Data:         fmt.Sprintf("Hello User %v, your secret query '%s' has been processed.", userID, req.Query),
+			Data:         fmt.Sprintf("Hello User %v, your query: '%s'", userID, req.Query),
 		}, nil
 	}
 }
 
+func makeBasicAuthEndpoint() polykit.Endpoint {
+	return func(ctx context.Context, request interface{}) (interface{}, error) {
+		req := request.(SecretRequest)
+		return polykit.StandardResponse{
+			ResponseCode: "00",
+			Message:      "Success",
+			Data:         fmt.Sprintf("Authenticated! Your query: '%s'", req.Query),
+		}, nil
+	}
+}
+
+func fiberDecodeQuery(c *fiber.Ctx) (interface{}, error) {
+	var req SecretRequest
+	if err := c.QueryParser(&req); err != nil {
+		return nil, err
+	}
+	return req, nil
+}
+
+func fiberEncodeJSON(c *fiber.Ctx, response interface{}) error {
+	return c.JSON(response)
+}
+
+func muxDecodeQuery(r *http.Request) (interface{}, error) {
+	return SecretRequest{Query: r.URL.Query().Get("query")}, nil
+}
+
+func muxEncodeJSON(w http.ResponseWriter, r *http.Request, response interface{}) error {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if resp, ok := response.(polykit.StandardResponse); ok && resp.ResponseCode != "00" {
+		w.WriteHeader(http.StatusUnauthorized)
+	}
+	return json.NewEncoder(w).Encode(response)
+}
+
 func main() {
-	secretKey := "my-very-secret-key"
+	zapLogger, err := zap.NewDevelopment()
+	if err != nil {
+		log.Fatalf("Failed to initialize Zap: %v", err)
+	}
+	defer zapLogger.Sync()
+	sugar := zapLogger.Sugar()
+	zapLog := logger.NewLogger(sugar)
 
-	// Initialize the endpoint and wrap with middleware
-	endpoint := makeSecretEndpoint()
-	endpoint = polykit.LoggingMiddleware(log.Default())(endpoint)
-	endpoint = polykit.JWTAuthMiddleware(secretKey)(endpoint)
+	jwtSecretKey := "my-very-secret-key"
+	basicUser := "admin"
+	basicPass := "s3cr3t"
 
-	// ==========================================
-	// Example 1: Serve via GoFiber (HTTP)
-	// ==========================================
+	jwtEndpoint := polykit.Chain(
+		telemetry.TracingMiddleware("jwt-secret-endpoint"),
+		logger.LoggingMiddleware(zapLog, "jwt-secret-endpoint"),
+		polykit.JWTAuthMiddleware(jwtSecretKey),
+	)(makeJWTEndpoint())
+
+	basicEndpoint := polykit.Chain(
+		telemetry.TracingMiddleware("basic-secret-endpoint"),
+		logger.LoggingMiddleware(zapLog, "basic-secret-endpoint"),
+		polykit.BasicAuthMiddleware(basicUser, basicPass),
+	)(makeBasicAuthEndpoint())
+
 	app := fiber.New()
-	fiberHandler := transport.NewFiberServer(
-		endpoint,
-		func(c *fiber.Ctx) (interface{}, error) {
-			var req SecretRequest
-			if err := c.QueryParser(&req); err != nil {
-				return nil, err
-			}
-			return req, nil
-		},
-		func(c *fiber.Ctx, response interface{}) error {
-			return c.JSON(response)
-		},
-		nil,
-	)
-	app.Get("/fiber/secret", fiberHandler)
 
-	// ==========================================
-	// Example 2: Serve via GoFiber (WebSocket)
-	// ==========================================
+	app.Get("/fiber/jwt-secret", transport.NewFiberServer(jwtEndpoint, fiberDecodeQuery, fiberEncodeJSON, nil))
+	app.Get("/fiber/basic-secret", transport.NewFiberServer(basicEndpoint, fiberDecodeQuery, fiberEncodeJSON, nil))
+
 	app.Use("/ws", func(c *fiber.Ctx) error {
 		if websocket.IsWebSocketUpgrade(c) {
 			c.Locals("allowed", true)
@@ -71,45 +106,33 @@ func main() {
 		}
 		return fiber.ErrUpgradeRequired
 	})
-
-	wsHandler := transport.NewFiberWSServer(
-		endpoint,
+	app.Get("/ws/secret", websocket.New(transport.NewFiberWSServer(
+		jwtEndpoint,
 		func(mt int, msg []byte) (interface{}, error) {
-			// For simplicity, assuming message is plain text query
 			return SecretRequest{Query: string(msg)}, nil
 		},
 		func(res interface{}) (int, []byte, error) {
-			// Basic formatting for example
-			respStr := fmt.Sprintf("%v", res)
-			return websocket.TextMessage, []byte(respStr), nil
+			return websocket.TextMessage, []byte(fmt.Sprintf("%v", res)), nil
 		},
-	)
-	app.Get("/ws/secret", websocket.New(wsHandler))
+	)))
 
 	go func() {
-		log.Println("Starting Fiber server (HTTP & WS) on :3000")
+		sugar.Info("Starting Fiber server on :3000")
 		if err := app.Listen(":3000"); err != nil {
-			log.Fatalf("Fiber server error: %v", err)
+			sugar.Fatalf("Fiber server error: %v", err)
 		}
 	}()
 
-	// ==========================================
-	// Example 3: Serve via gRPC (Conceptual Wrapper)
-	// ==========================================
-	// This shows how the gRPC handler would be initialized
-	grpcHandler := transport.NewGRPCServer(
-		endpoint,
-		func(ctx context.Context, req interface{}) (interface{}, error) {
-			// Cast from proto request to domain request
-			return SecretRequest{Query: "grpc-query"}, nil
-		},
-		func(ctx context.Context, res interface{}) (interface{}, error) {
-			// Cast from domain response to proto response
-			return res, nil
-		},
-	)
-	log.Printf("gRPC handler initialized (requires grpc.Server and proto registration to actually run): %v", grpcHandler != nil)
+	r := mux.NewRouter()
+	r.Handle("/mux/jwt-secret", transport.NewHTTPServer(jwtEndpoint, muxDecodeQuery, muxEncodeJSON, nil)).Methods(http.MethodGet)
+	r.Handle("/mux/basic-secret", transport.NewHTTPServer(basicEndpoint, muxDecodeQuery, muxEncodeJSON, nil)).Methods(http.MethodGet)
 
-	// Keep main running (or use graceful shutdown)
+	go func() {
+		sugar.Info("Starting Gorilla Mux server on :8080")
+		if err := http.ListenAndServe(":8080", r); err != nil {
+			sugar.Fatalf("Mux server error: %v", err)
+		}
+	}()
+
 	select {}
 }

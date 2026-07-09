@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -44,10 +45,16 @@ func NewHTTPServer(
 		authHeader := r.Header.Get("Authorization")
 		if authHeader != "" {
 			parts := strings.SplitN(authHeader, " ", 2)
-			if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
-				ctx = context.WithValue(ctx, "auth_token", parts[1])
-			} else {
-				ctx = context.WithValue(ctx, "auth_token", authHeader)
+			if len(parts) == 2 {
+				switch strings.ToLower(parts[0]) {
+				case "bearer":
+					ctx = context.WithValue(ctx, "auth_token", parts[1])
+				case "basic":
+					decoded, err := base64.StdEncoding.DecodeString(parts[1])
+					if err == nil {
+						ctx = context.WithValue(ctx, "auth_basic", string(decoded))
+					}
+				}
 			}
 		}
 

@@ -3,19 +3,34 @@ package polykit
 import (
 	"context"
 	"fmt"
-	"log"
-	"time"
+	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// LoggingMiddleware is an example of a core middleware that logs request execution time.
-func LoggingMiddleware(logger *log.Logger) Middleware {
+
+// BasicAuthMiddleware checks credentials from the context key "auth_basic" (set by transport layer).
+// The value is expected to be in the format "username:password" (decoded from Basic base64 header).
+// If the credentials do not match, it returns a StandardResponse with ResponseCode "01".
+func BasicAuthMiddleware(expectedUsername, expectedPassword string) Middleware {
 	return func(next Endpoint) Endpoint {
 		return func(ctx context.Context, request interface{}) (response interface{}, err error) {
-			defer func(begin time.Time) {
-				logger.Printf("request completed in %v, err: %v", time.Since(begin), err)
-			}(time.Now())
+			authBasic, ok := ctx.Value("auth_basic").(string)
+			if !ok || authBasic == "" {
+				return StandardResponse{
+					ResponseCode: "01",
+					Message:      "Unauthorized: Missing Basic credentials",
+				}, nil
+			}
+
+			parts := strings.SplitN(authBasic, ":", 2)
+			if len(parts) != 2 || parts[0] != expectedUsername || parts[1] != expectedPassword {
+				return StandardResponse{
+					ResponseCode: "01",
+					Message:      "Unauthorized: Invalid credentials",
+				}, nil
+			}
+
 			return next(ctx, request)
 		}
 	}
@@ -34,7 +49,6 @@ func JWTAuthMiddleware(secretKey string) Middleware {
 				}, nil
 			}
 
-			// Parse and validate token
 			token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 					return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -57,7 +71,6 @@ func JWTAuthMiddleware(secretKey string) Middleware {
 				}, nil
 			}
 
-			// Extract user_id or any other claim and pass to context
 			if userID, ok := claims["user_id"]; ok {
 				ctx = context.WithValue(ctx, "user_id", userID)
 			} else {
@@ -67,7 +80,6 @@ func JWTAuthMiddleware(secretKey string) Middleware {
 				}, nil
 			}
 
-			// Call next endpoint
 			return next(ctx, request)
 		}
 	}
